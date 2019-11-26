@@ -130,8 +130,10 @@ dmypy.json
 
 .DS_Store
 
+.vscode/
+lightning_logs/
 netflix-prize-data/
 the-movies-dataset/
-
+*.csv
 *.pt
 config
