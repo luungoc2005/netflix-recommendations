@@ -61,7 +61,7 @@ del tmp_metadata,tmp_titles
 
 # Filter all ratings with metadata
 df_hybrid = df.drop('Date', axis=1).set_index('Movie').join(df_id_descriptions).dropna().drop('overview', axis=1).reset_index().rename({'index':'Movie'}, axis=1)
-print(df_id_descriptions.head())
+# print(df_id_descriptions.head())
 
 # mapping = {id:i for i, id in enumerate(df_id_descriptions.index)}
 
@@ -155,7 +155,7 @@ def get_single_score():
   else:
     try:
       user_id = int(user_id)
-      user_id = user_id_reverse_mapping[user_id]
+      user_idx = user_id_mapping[user_id]
     except:
       return
 
@@ -166,15 +166,20 @@ def get_single_score():
   else:
     try:
       movie_id = int(movie_id)
-      movie_id = movie_id_reverse_mapping[movie_id]
+      movie_idx = movie_id_mapping[movie_id]
     except:
       return
 
-  overview_vec = sentence_vectors[movie_id].unsqueeze(0)
-  with torch.no_grad:
+  if movie_id in mapping:
+    overview_vec = sentence_vectors[mapping[movie_id]]
+  else:
+    overview_vec = torch.zeros(768).float()
+  overview_vec = overview_vec.unsqueeze(0)
+
+  with torch.no_grad():
     score = model(
-      torch.LongTensor([user_id]),
-      torch.LongTensor([movie_id]),
+      torch.LongTensor([user_idx]),
+      torch.LongTensor([movie_idx]),
       overview_vec
     )
   print(f'Calculated score: {score[0]}')
@@ -182,7 +187,13 @@ def get_single_score():
 def add_user():
   import torch
   import torch.nn as nn
+  new_user_id = max(user_id_mapping.keys()) + 1
+
   config.users += 1
+
+  user_id_mapping[new_user_id] = config.users - 1
+  user_id_reverse_mapping[config.users - 1] = new_user_id
+
   user_emb_weights = model.user_emb.weight
   # new_weights = torch.randn(1, config.user_embedding_size)
   new_weights = torch.zeros(1, config.user_embedding_size)
@@ -190,14 +201,31 @@ def add_user():
   print(f'Old users embedding weights: {user_emb_weights.size()}')
   print(f'New users embedding weights: {new_emb_weights.size()}')
   model.user_emb = nn.Embedding.from_pretrained(new_emb_weights)
-  
-  return config.users - 1
 
-def add_movie(title, overview):
+  return new_user_id
+
+def add_movie():
   import torch
   import torch.nn as nn
+
+  print('Movie title:')
+  title = input()
+  print('Movie overview:')
+  overview = input()
+
+  new_movie_id = max(movie_id_mapping.keys()) + 1
+
   config.movies += 1
-  new_movie_id = config.movies - 1
+  
+  movie_id_mapping[new_movie_id] = config.movies - 1
+  movie_id_reverse_mapping[config.movies - 1] = new_movie_id
+
+  new_movie_data = pd.DataFrame({
+    'Id': [max(movie_titles['Id'].values) + 1], 
+    'Year': [2018], 
+    'Name': [overview]
+  })
+  movie_titles = movie_titles.append(new_movie_data)
 
   movie_emb_weights = model.movie_emb.weight
   # new_weights = torch.randn(1, config.movie_embedding_size)
@@ -214,6 +242,57 @@ def add_movie(title, overview):
 
   return new_movie_id
 
+def get_top_related_movies():
+  import numpy as np
+
+  print('Type in an existing movie ID')
+  movie_id = input()
+  if (movie_id == CANCEL_KEY):
+    return
+  else:
+    try:
+      movie_id = int(movie_id)
+      movie_idx = movie_id_mapping[movie_id]
+    except:
+      return
+  
+  print(movie_titles[movie_titles['Id'] == movie_id])
+  
+  if (movie_id not in mapping.keys()):
+    with torch.no_grad():
+      movie_vec = model.movie_emb(torch.LongTensor([movie_id])).squeeze(0)
+      distances = np.dot(movie_vec.detach().numpy(), model.movie_emb.weight.t().detach().numpy())
+
+  else:
+    print('Movie overview exists.')
+
+    with torch.no_grad():
+      movie_vec = model.movie_emb(torch.LongTensor([movie_id])).squeeze(0)
+      movie_overview_vec = sentence_vectors[mapping[movie_id]]
+      movie_vec = torch.cat([movie_vec, movie_overview_vec])
+
+      all_movie_ids = [movie_id_reverse_mapping[id] for id in range(config.movies)]
+      all_overview_vec = torch.stack([
+        sentence_vectors[id]
+        if id in mapping.keys()
+        else torch.zeros(768).float()
+        for id in all_movie_ids
+      ])
+      all_movies_vec = torch.cat([model.movie_emb.weight, all_overview_vec], dim=-1)
+      distances = np.dot(movie_vec.detach().numpy(), all_movies_vec.t().detach().numpy())
+  sorted_distances, sorted_indices = torch.sort(
+    torch.from_numpy(distances), 
+    dim=-1, 
+    descending=True
+  )
+      
+  print('\n\n=== Top 10 Recommendations: ===\n\n')
+
+  for ix in range(1, 11):
+    similar_movie_idx = sorted_indices[ix]
+    similar_movie_id = movie_id_reverse_mapping[int(similar_movie_idx)]
+    print(movie_titles[movie_titles['Id'] == similar_movie_id])
+    print(f'Score: {sorted_distances[ix]}\n\n')
 
 if __name__ == "__main__":
   new_user_id = add_user()
@@ -225,17 +304,30 @@ if __name__ == "__main__":
     
     1. Get recommendations for an existing user
     2. Get single score for user_id, movie_id pair
+    3. Get top related movies for movie_id
 
     Test user commands:
 
-    2. Add a movie title to the test user
+    4. Add a movie title to the test user
+    5. Add a new movie to the dataset
+    6. Add a movie to the test user's watch list
+
     """)
     command = input()
     if (command == '1'):
       get_recommendation_existing_user()
 
-    if (command == '2'):
+    elif (command == '2'):
       get_single_score()
+    
+    elif (command == '3') :
+      get_top_related_movies()
+
+    elif (command == '4'):
+      add_movie()
+
+    elif (command == '5'):
+      print('Not Implemented')
 
     elif (command == 'exit'):
       exit()
